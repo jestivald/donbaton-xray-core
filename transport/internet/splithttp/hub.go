@@ -404,6 +404,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 type httpServerConn struct {
 	sync.Mutex
+	closeOnce sync.Once
 	*done.Instance
 	io.Reader // no need to Close request.Body
 	http.ResponseWriter
@@ -423,9 +424,21 @@ func (c *httpServerConn) Write(b []byte) (int, error) {
 }
 
 func (c *httpServerConn) Close() error {
-	c.Lock()
-	defer c.Unlock()
-	return c.Instance.Close()
+	c.closeOnce.Do(func() {
+		if c.TryLock() {
+			defer c.Unlock()
+			_ = c.Instance.Close()
+			return
+		}
+		// A slow download can hold Mutex in Write/Flush. Interrupt that response
+		// before waiting for the writer, otherwise authenticated-user revocation
+		// can block indefinitely. HTTP/2 applies this deadline to this stream.
+		_ = http.NewResponseController(c.ResponseWriter).SetWriteDeadline(time.Now())
+		c.Lock()
+		defer c.Unlock()
+		_ = c.Instance.Close()
+	})
+	return nil
 }
 
 type Listener struct {

@@ -78,6 +78,7 @@ type Handler struct {
 	policyManager          policy.Manager
 	stats                  stats.Manager
 	validator              vless.Validator
+	userConnections        userConnections
 	decryption             *encryption.ServerInstance
 	outboundHandlerManager outbound.Manager
 	observer               features.Feature
@@ -227,6 +228,7 @@ func (h *Handler) RemoveReverse(u *protocol.MemoryUser) {
 
 // Close implements common.Closable.Close().
 func (h *Handler) Close() error {
+	h.closeUserConnections()
 	if h.decryption != nil {
 		h.decryption.Close()
 	}
@@ -238,13 +240,12 @@ func (h *Handler) Close() error {
 
 // AddUser implements proxy.UserManager.AddUser().
 func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
-	return h.validator.Add(u)
+	return h.addUser(u)
 }
 
 // RemoveUser implements proxy.UserManager.RemoveUser().
 func (h *Handler) RemoveUser(ctx context.Context, e string) error {
-	h.RemoveReverse(h.validator.GetByEmail(e))
-	return h.validator.Del(e)
+	return h.removeUser(e)
 }
 
 // GetUser implements proxy.UserManager.GetUser().
@@ -523,6 +524,12 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		}
 		return err
 	}
+
+	unregister, err := h.registerUserConnection(request.User, connection)
+	if err != nil {
+		return err
+	}
+	defer unregister()
 
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		errors.LogWarningInner(ctx, err, "unable to set back read deadline")
